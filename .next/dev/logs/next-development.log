@@ -1,0 +1,3 @@
+[00:00:02.168] Server  LOG     ✓ Ready in 1318ms
+[00:00:55.804] Server  LOG       Reload env: .env.local
+[00:02:15.742] Server  LOG       Reload env: .env.local

@@ -1,0 +1,15 @@
+__turbopack_load_page_chunks__("/", [
+  "static/chunks/a5b21_next_dist_compiled_77fb95ca._.js",
+  "static/chunks/a5b21_next_dist_shared_lib_a9ec0f67._.js",
+  "static/chunks/a5b21_next_dist_client_bfbd7036._.js",
+  "static/chunks/a5b21_next_dist_6f856400._.js",
+  "static/chunks/a5b21_next_head_e97ae2d9.js",
+  "static/chunks/a5b21_react_234ca4cf._.js",
+  "static/chunks/a5b21_react-dom_cjs_react-dom_development_bc17b6c5.js",
+  "static/chunks/a5b21_react-dom_0bdcbc1e._.js",
+  "static/chunks/a5b21_@supabase_auth-js_dist_module_71ad8ffb._.js",
+  "static/chunks/a5b21_3ef8cf31._.js",
+  "static/chunks/[root-of-the-server]__b6e67352._.js",
+  "static/chunks/Documents_voicechat_pages_index_2da965e7._.js",
+  "static/chunks/turbopack-Documents_voicechat_pages_index_61e49fd2._.js"
+])

@@ -1,0 +1,5 @@
+{
+  "/auth/callback": [
+    "static/chunks/pages/auth/callback.js"
+  ]
+}
