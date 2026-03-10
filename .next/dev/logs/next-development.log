@@ -1,0 +1,10 @@
+[00:00:02.832] Server  LOG     ✓ Ready in 1822ms
+[00:00:11.701] Server  LOG     ○ Compiling / ...
+[00:00:14.447] Server  WARN    Do not add <script> tags using next/head (see <script> tag with src="https://cdnjs.cloudflare.com/ajax/libs/peerjs/1.5.2/peerjs.min.js"). Use next/script instead. 
+See more info here: https://nextjs.org/docs/messages/no-script-tags-in-head-component
+[00:00:15.216] Browser WARN    Do not add <script> tags using next/head (see <script> tag with src="https://cdnjs.cloudflare.com/ajax/libs/peerjs/1.5.2/peerjs.min.js"). Use next/script instead. 
+See more info here: https://nextjs.org/docs/messages/no-script-tags-in-head-component
+[00:00:47.614] Browser WARN    Do not add <script> tags using next/head (see <script> tag with src="https://cdnjs.cloudflare.com/ajax/libs/peerjs/1.5.2/peerjs.min.js"). Use next/script instead. 
+See more info here: https://nextjs.org/docs/messages/no-script-tags-in-head-component
+[00:00:56.811] Browser WARN    Do not add <script> tags using next/head (see <script> tag with src="https://cdnjs.cloudflare.com/ajax/libs/peerjs/1.5.2/peerjs.min.js"). Use next/script instead. 
+See more info here: https://nextjs.org/docs/messages/no-script-tags-in-head-component

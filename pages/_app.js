@@ -1,5 +1,13 @@
 import '../styles/globals.css'
+import Head from 'next/head'
 
 export default function App({ Component, pageProps }) {
-  return <Component {...pageProps} />
+  return (
+    <>
+      <Head>
+        <script src="https://cdnjs.cloudflare.com/ajax/libs/peerjs/1.5.2/peerjs.min.js" />
+      </Head>
+      <Component {...pageProps} />
+    </>
+  )
 }

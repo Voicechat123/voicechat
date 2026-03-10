@@ -16,7 +16,7 @@ export default function AuthCallback() {
         setTimeout(async () => {
           const { data: { session: retrySession } } = await supabase.auth.getSession()
           if (!retrySession) {
-            router.replace('/')
+            router.replace('/login')
             return
           }
           await checkProfile(retrySession.user)

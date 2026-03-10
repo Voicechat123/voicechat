@@ -2,696 +2,813 @@ import { useState, useEffect, useRef, useCallback } from 'react'
 import { useRouter } from 'next/router'
 import Head from 'next/head'
 import { supabase } from '../lib/supabaseClient'
-import { VoiceCallManager } from '../lib/webrtc'
+import { createPeer, getMedia } from '../lib/peerCall'
 import CallModal from '../components/CallModal'
+import AvatarUpload from '../components/AvatarUpload'
+import { NovuMark, NovuWordmark } from '../components/NovuLogo'
 
-// ─── Utility ────────────────────────────────────────────────────────────────
+// ── Constants ─────────────────────────────────────────────────────────────────
+const GRAD = {
+  purple: 'linear-gradient(135deg,#6c63ff,#a78bfa)',
+  teal:   'linear-gradient(135deg,#00d4ff,#00e5a0)',
+  pink:   'linear-gradient(135deg,#f472b6,#fb7185)',
+  orange: 'linear-gradient(135deg,#fb923c,#fbbf24)',
+  green:  'linear-gradient(135deg,#34d399,#10b981)',
+}
+const AVATAR_COLORS = [
+  { id: 'purple', grad: GRAD.purple },
+  { id: 'teal',   grad: GRAD.teal },
+  { id: 'pink',   grad: GRAD.pink },
+  { id: 'orange', grad: GRAD.orange },
+  { id: 'green',  grad: GRAD.green },
+]
 
-function Avatar({ nickname, size = 'md' }) {
-  const initials = (nickname || '?').slice(0, 2).toUpperCase()
-  const s = size === 'lg' ? 56 : 40
+// ── Avatar display (nie upload) ──────────────────────────────────────────────
+function Avatar({ profile, size = 40 }) {
+  const initials = (profile?.nickname || '?').slice(0, 2).toUpperCase()
+  if (profile?.avatar_url) {
+    return (
+      <div style={{ width: size, height: size, borderRadius: '50%', overflow: 'hidden', flexShrink: 0 }}>
+        <img src={profile.avatar_url} alt="avatar" style={{ width: '100%', height: '100%', objectFit: 'cover' }} />
+      </div>
+    )
+  }
   return (
     <div style={{
-      width: s, height: s, borderRadius: '50%', flexShrink: 0,
-      background: 'linear-gradient(135deg, var(--primary), var(--accent))',
+      width: size, height: size, borderRadius: '50%', flexShrink: 0,
+      background: GRAD[profile?.avatar_color || 'purple'],
       display: 'flex', alignItems: 'center', justifyContent: 'center',
-      fontWeight: 800, fontSize: s * 0.35, color: 'white',
-      userSelect: 'none',
-    }}>
-      {initials}
-    </div>
+      fontWeight: 800, fontSize: size * 0.34, color: 'white', userSelect: 'none',
+    }}>{initials}</div>
   )
 }
 
 function formatTime(iso) {
-  const d = new Date(iso)
-  return d.toLocaleTimeString('pl-PL', { hour: '2-digit', minute: '2-digit' })
+  return new Date(iso).toLocaleTimeString('pl-PL', { hour: '2-digit', minute: '2-digit' })
 }
 
-// ─── Main Component ──────────────────────────────────────────────────────────
+// ── Profile Modal ─────────────────────────────────────────────────────────────
+function ProfileModal({ user, profile, onClose, onProfileUpdated }) {
+  const [localProfile, setLocalProfile] = useState(profile)
+  const [nickname, setNickname] = useState(profile?.nickname || '')
+  const [avatarColor, setAvatarColor] = useState(profile?.avatar_color || 'purple')
 
+  // Zmiana hasła
+  const [oldPass, setOldPass] = useState('')
+  const [newPass, setNewPass] = useState('')
+  const [newPass2, setNewPass2] = useState('')
+  const [showPass, setShowPass] = useState(false)
+  // Czy użytkownik ma już ustawione hasło?
+  const [hasPassword, setHasPassword] = useState(false)
+  const [showDeleteConfirm, setShowDeleteConfirm] = useState(false)
+  const [deleteLoading, setDeleteLoading] = useState(false)
+
+  useEffect(() => {
+    // Sprawdź czy użytkownik zalogował się kiedyś hasłem (ma provider 'email' z hasłem)
+    supabase.auth.getUser().then(({ data: { user: u } }) => {
+      const identities = u?.identities || []
+      const emailIdentity = identities.find(i => i.provider === 'email')
+      // Jeśli identity ma identity_data.email_verified i was created with password
+      // Sprawdzamy przez próbę — jeśli user.app_metadata.provider === 'email' i nie jest tylko OTP
+      const provider = u?.app_metadata?.provider
+      const providers = u?.app_metadata?.providers || []
+      // Magic link users mają tylko 'email' provider ale bez hasła
+      // Najprostszy sposób: sprawdź czy użytkownik ma last_sign_in z hasłem
+      // Zamiast tego — użyj flagi z profilu jeśli istnieje, albo sprawdź przez signIn
+      // Najprościej: sprawdź czy profile.has_password === true (kolumna w DB)
+      // Fallback: zakładamy że nie ma hasła (bezpieczniejsze)
+      setHasPassword(u?.user_metadata?.has_password === true)
+    })
+  }, [])
+
+  const [loading, setLoading] = useState(false)
+  const [error, setError] = useState('')
+  const [success, setSuccess] = useState('')
+  const [nickAvail, setNickAvail] = useState(true)
+  const [checkingNick, setCheckingNick] = useState(false)
+
+  useEffect(() => {
+    if (nickname.length < 3 || nickname === profile?.nickname) { setNickAvail(true); return }
+    const t = setTimeout(async () => {
+      setCheckingNick(true)
+      const { data } = await supabase.from('profiles').select('nickname').eq('nickname', nickname.toLowerCase()).single()
+      setNickAvail(!data); setCheckingNick(false)
+    }, 500)
+    return () => clearTimeout(t)
+  }, [nickname, profile?.nickname])
+
+  const handleSave = async (e) => {
+    e.preventDefault()
+    setError(''); setSuccess('')
+    if (nickname.length < 3) { setError('Nick min. 3 znaki.'); return }
+    if (!nickAvail && nickname !== profile?.nickname) { setError('Ten nick jest zajęty.'); return }
+
+    // Walidacja zmiany hasła
+    if (showPass && newPass.length > 0) {
+      if (hasPassword && !oldPass) { setError('Podaj stare hasło.'); return }
+      if (newPass.length < 8) { setError('Nowe hasło min. 8 znaków.'); return }
+      if (newPass !== newPass2) { setError('Nowe hasła nie są takie same.'); return }
+    }
+
+    setLoading(true)
+
+    if (showPass && newPass.length >= 8) {
+      // Użytkownik ma hasło — weryfikuj stare
+      if (hasPassword && oldPass) {
+        const { error: verifyErr } = await supabase.auth.signInWithPassword({
+          email: user.email,
+          password: oldPass,
+        })
+        if (verifyErr) {
+          setLoading(false)
+          setError('Stare hasło jest nieprawidłowe.')
+          return
+        }
+      }
+      // Ustaw nowe hasło
+      const { error: pwErr } = await supabase.auth.updateUser({
+        password: newPass,
+        data: { has_password: true },
+      })
+      if (pwErr) { setLoading(false); setError(pwErr.message); return }
+      setHasPassword(true)
+    }
+
+    // Zaktualizuj profil
+    const { error: pe } = await supabase.from('profiles')
+      .update({ nickname: nickname.toLowerCase(), avatar_color: avatarColor })
+      .eq('id', user.id)
+    if (pe) { setLoading(false); setError(pe.message); return }
+
+    setLoading(false)
+    setSuccess('Zapisano!')
+    setOldPass(''); setNewPass(''); setNewPass2('')
+    const updated = { ...localProfile, nickname: nickname.toLowerCase(), avatar_color: avatarColor }
+    setLocalProfile(updated)
+    onProfileUpdated(updated)
+  }
+
+  const ns = (() => {
+    if (nickname === profile?.nickname || nickname.length < 3) return null
+    if (checkingNick) return { color: 'var(--text-muted)', text: 'Sprawdzanie...' }
+    if (nickAvail) return { color: 'var(--green)', text: '✓ Wolny' }
+    return { color: 'var(--red)', text: '✗ Zajęty' }
+  })()
+
+  return (
+    <div className="overlay" onClick={e => { if (e.target === e.currentTarget) onClose() }}>
+      <div className="animate-fade-in" style={{
+        background: 'var(--surface)', border: '1px solid var(--border)',
+        borderRadius: 24, padding: '28px 24px', width: '100%', maxWidth: 400,
+        maxHeight: '92dvh', overflowY: 'auto',
+      }}>
+        {/* Header */}
+        <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 24 }}>
+          <h2 style={{ fontFamily: 'Space Grotesk,sans-serif', fontSize: 20, fontWeight: 800 }}>Mój profil</h2>
+          <button onClick={onClose} style={{ background: 'none', border: 'none', color: 'var(--text-muted)', cursor: 'pointer', fontSize: 20, lineHeight: 1 }}>✕</button>
+        </div>
+
+        {/* Avatar upload */}
+        <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', marginBottom: 24, gap: 10 }}>
+          <AvatarUpload
+            userId={user.id}
+            currentAvatarUrl={localProfile?.avatar_url}
+            nickname={nickname}
+            avatarColor={avatarColor}
+            size={88}
+            onUploadDone={(url) => {
+              const updated = { ...localProfile, avatar_url: url }
+              setLocalProfile(updated)
+              onProfileUpdated(updated)
+            }}
+          />
+          <p style={{ fontSize: 12, color: 'var(--text-muted)' }}>Kliknij aby zmienić zdjęcie</p>
+          <div style={{ fontWeight: 700, fontSize: 15 }}>@{nickname}</div>
+          <div style={{ color: 'var(--text-muted)', fontSize: 13 }}>{user?.email}</div>
+        </div>
+
+        <form onSubmit={handleSave} style={{ display: 'flex', flexDirection: 'column', gap: 14 }}>
+          {/* Kolor fallback */}
+          <div>
+            <p style={{ fontSize: 12, color: 'var(--text-muted)', marginBottom: 8, fontWeight: 600, textTransform: 'uppercase', letterSpacing: '0.5px' }}>Kolor avatara (gdy brak zdjęcia)</p>
+            <div style={{ display: 'flex', gap: 8 }}>
+              {AVATAR_COLORS.map(c => (
+                <button key={c.id} type="button" onClick={() => setAvatarColor(c.id)} style={{
+                  width: 34, height: 34, borderRadius: '50%', background: c.grad, border: 'none',
+                  cursor: 'pointer',
+                  boxShadow: avatarColor === c.id ? '0 0 0 2px var(--bg), 0 0 0 4px var(--primary)' : 'none',
+                  transition: 'box-shadow 0.2s, transform 0.15s',
+                  transform: avatarColor === c.id ? 'scale(1.12)' : 'scale(1)',
+                }} />
+              ))}
+            </div>
+          </div>
+
+          {/* Nick */}
+          <div style={{ position: 'relative' }}>
+            <input className="input" type="text" placeholder="Nick" value={nickname}
+              onChange={e => { setNickname(e.target.value.toLowerCase().replace(/[^a-z0-9_]/g, '')); setError(''); setSuccess('') }}
+              maxLength={24} />
+            {ns && <span style={{ position: 'absolute', right: 12, top: '50%', transform: 'translateY(-50%)', fontSize: 12, fontWeight: 600, color: ns.color }}>{ns.text}</span>}
+          </div>
+
+          {/* Zmiana hasła */}
+          <div style={{ background: 'var(--surface-2)', border: '1px solid var(--border)', borderRadius: 14, overflow: 'hidden' }}>
+            <button type="button" onClick={() => setShowPass(p => !p)} style={{
+              width: '100%', padding: '12px 16px', background: 'none', border: 'none',
+              display: 'flex', alignItems: 'center', justifyContent: 'space-between',
+              cursor: 'pointer', color: 'var(--text)', fontFamily: 'Inter,sans-serif', fontSize: 14, fontWeight: 600,
+            }}>
+              <span>🔑 Zmień hasło</span>
+              <span style={{ color: 'var(--text-muted)', fontSize: 12 }}>{showPass ? '▲' : '▼'}</span>
+            </button>
+            {showPass && (
+              <div style={{ padding: '0 12px 12px', display: 'flex', flexDirection: 'column', gap: 8 }}>
+                {!hasPassword && (
+                  <p style={{ fontSize: 12, color: 'var(--text-muted)', margin: '0 0 4px' }}>
+                    Ustaw hasło aby logować się szybciej — bez czekania na e-mail.
+                  </p>
+                )}
+                {hasPassword && (
+                  <input className="input" type="password" placeholder="Stare hasło" value={oldPass}
+                    onChange={e => { setOldPass(e.target.value); setError(''); setSuccess('') }} />
+                )}
+                <input className="input" type="password" placeholder={hasPassword ? 'Nowe hasło (min. 8 znaków)' : 'Hasło (min. 8 znaków)'} value={newPass}
+                  onChange={e => { setNewPass(e.target.value); setError(''); setSuccess('') }} />
+                <input className="input" type="password" placeholder="Powtórz hasło" value={newPass2}
+                  onChange={e => { setNewPass2(e.target.value); setError(''); setSuccess('') }} />
+              </div>
+            )}
+          </div>
+
+          {error && <div style={{ background: 'rgba(255,92,106,0.1)', border: '1px solid rgba(255,92,106,0.3)', borderRadius: 12, padding: '10px 14px', color: 'var(--red)', fontSize: 13 }}>{error}</div>}
+          {success && <div style={{ background: 'rgba(0,229,160,0.1)', border: '1px solid rgba(0,229,160,0.3)', borderRadius: 12, padding: '10px 14px', color: 'var(--green)', fontSize: 13 }}>✓ {success}</div>}
+
+          <button className="btn-primary" type="submit" disabled={loading} style={{ display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 10 }}>
+            {loading ? <><div className="spinner" />Zapisywanie...</> : 'Zapisz zmiany'}
+          </button>
+        </form>
+
+        {/* ── Strefa niebezpieczna ── */}
+        <div style={{ marginTop: 8, borderTop: '1px solid var(--border)', paddingTop: 20 }}>
+          <p style={{ fontSize: 12, color: 'var(--red)', fontWeight: 700, textTransform: 'uppercase', letterSpacing: '0.5px', marginBottom: 12 }}>
+            ⚠️ Strefa niebezpieczna
+          </p>
+          {!showDeleteConfirm ? (
+            <button type="button" onClick={() => setShowDeleteConfirm(true)} style={{
+              width: '100%', padding: '11px 16px',
+              background: 'rgba(255,92,106,0.08)', border: '1px solid rgba(255,92,106,0.3)',
+              borderRadius: 'var(--radius)', color: 'var(--red)',
+              fontFamily: 'Inter,sans-serif', fontSize: 14, fontWeight: 600,
+              cursor: 'pointer', transition: 'background 0.2s',
+            }}
+              onMouseEnter={e => e.currentTarget.style.background = 'rgba(255,92,106,0.15)'}
+              onMouseLeave={e => e.currentTarget.style.background = 'rgba(255,92,106,0.08)'}
+            >
+              🗑️ Usuń konto
+            </button>
+          ) : (
+            <div style={{ background: 'rgba(255,92,106,0.08)', border: '1px solid rgba(255,92,106,0.3)', borderRadius: 14, padding: 16 }}>
+              <p style={{ fontSize: 14, fontWeight: 700, color: 'var(--red)', marginBottom: 6 }}>Na pewno chcesz usunąć konto?</p>
+              <p style={{ fontSize: 13, color: 'var(--text-muted)', marginBottom: 14, lineHeight: 1.5 }}>
+                Wszystkie Twoje dane, wiadomości i profil zostaną trwale usunięte. Tej operacji nie można cofnąć.
+              </p>
+              <div style={{ display: 'flex', gap: 10 }}>
+                <button type="button" onClick={() => setShowDeleteConfirm(false)} style={{
+                  flex: 1, padding: '10px', background: 'var(--surface-2)', border: '1px solid var(--border)',
+                  borderRadius: 'var(--radius)', color: 'var(--text)', fontFamily: 'Inter,sans-serif',
+                  fontSize: 14, fontWeight: 600, cursor: 'pointer',
+                }}>
+                  Anuluj
+                </button>
+                <button type="button" disabled={deleteLoading} onClick={async () => {
+                  setDeleteLoading(true)
+                  try {
+                    const { data: { session } } = await supabase.auth.getSession()
+                    const res = await fetch(`${process.env.NEXT_PUBLIC_SUPABASE_URL}/functions/v1/delete-account`, {
+                      method: 'POST',
+                      headers: {
+                        'Authorization': `Bearer ${session.access_token}`,
+                        'Content-Type': 'application/json',
+                      },
+                    })
+                    if (!res.ok) throw new Error('Błąd serwera')
+                    await supabase.auth.signOut()
+                    window.location.href = '/login'
+                  } catch(e) {
+                    setDeleteLoading(false)
+                    alert('Błąd: ' + (e?.message || JSON.stringify(e)))
+                  }
+                }} style={{
+                  flex: 1, padding: '10px', background: 'var(--red)', border: 'none',
+                  borderRadius: 'var(--radius)', color: 'white', fontFamily: 'Inter,sans-serif',
+                  fontSize: 14, fontWeight: 700, cursor: deleteLoading ? 'not-allowed' : 'pointer',
+                  opacity: deleteLoading ? 0.7 : 1,
+                  display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 8,
+                }}>
+                  {deleteLoading ? <><div className="spinner" style={{ borderColor: 'rgba(255,255,255,0.3)', borderTopColor: 'white', width: 16, height: 16 }} />Usuwanie...</> : '🗑️ Tak, usuń'}
+                </button>
+              </div>
+            </div>
+          )}
+        </div>
+      </div>
+    </div>
+  )
+}
+
+// ── Contact Row ───────────────────────────────────────────────────────────────
+function ContactRow({ profile: p, subtitle, active, onClick }) {
+  return (
+    <div onClick={onClick} style={{
+      display: 'flex', alignItems: 'center', gap: 10, padding: '10px 14px',
+      cursor: 'pointer', background: active ? 'var(--surface-3)' : 'transparent',
+      borderLeft: `3px solid ${active ? 'var(--primary)' : 'transparent'}`, transition: 'background 0.15s',
+    }}
+      onMouseEnter={e => { if (!active) e.currentTarget.style.background = 'var(--surface-2)' }}
+      onMouseLeave={e => { if (!active) e.currentTarget.style.background = 'transparent' }}
+    >
+      <Avatar profile={p} />
+      <div style={{ flex: 1, overflow: 'hidden' }}>
+        <div style={{ fontWeight: 700, fontSize: 14 }}>@{p?.nickname}</div>
+        {subtitle && <div style={{ fontSize: 12, color: 'var(--text-muted)', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis', maxWidth: 185 }}>{subtitle}</div>}
+      </div>
+    </div>
+  )
+}
+
+// ── Main App ──────────────────────────────────────────────────────────────────
 export default function AppPage() {
   const router = useRouter()
-
-  // Auth
   const [user, setUser] = useState(null)
   const [profile, setProfile] = useState(null)
   const [authLoading, setAuthLoading] = useState(true)
-
-  // UI
+  const [mobileView, setMobileView] = useState('list')
   const [selectedContact, setSelectedContact] = useState(null)
-  const [sidebarTab, setSidebarTab] = useState('chats') // 'chats' | 'search'
+  const [sidebarTab, setSidebarTab] = useState('chats')
   const [searchQuery, setSearchQuery] = useState('')
   const [searchResults, setSearchResults] = useState([])
   const [searching, setSearching] = useState(false)
-
-  // Messages
   const [messages, setMessages] = useState([])
   const [newMsg, setNewMsg] = useState('')
-  const [sendingMsg, setSendingMsg] = useState(false)
-  const [conversations, setConversations] = useState([]) // {profile, lastMsg}
+  const [conversations, setConversations] = useState([])
   const messagesEndRef = useRef(null)
-
-  // Voice call state
   const [callState, setCallState] = useState(null)
-  // callState = { mode: 'calling'|'incoming'|'active', remoteUser, remoteStream, iceState }
-  const callManagerRef = useRef(null)
-  const [incomingSignal, setIncomingSignal] = useState(null)
+  const peerRef = useRef(null)
+  const currentCallRef = useRef(null)
+  const localStreamRef = useRef(null)
+  const [micEnabled, setMicEnabled] = useState(true)
+  const [camEnabled, setCamEnabled] = useState(true)
+  const [showProfile, setShowProfile] = useState(false)
+  const [isMobile, setIsMobile] = useState(false)
 
-  // ─── Auth ──────────────────────────────────────────────────────────────────
+  useEffect(() => {
+    const check = () => setIsMobile(window.innerWidth <= 768)
+    check(); window.addEventListener('resize', check)
+    return () => window.removeEventListener('resize', check)
+  }, [])
 
   useEffect(() => {
     supabase.auth.getUser().then(async ({ data: { user } }) => {
-      if (!user) { router.replace('/'); return }
-
-      const { data: prof } = await supabase
-        .from('profiles')
-        .select('*')
-        .eq('id', user.id)
-        .single()
-
+      if (!user) { router.replace('/login'); return }
+      const { data: prof } = await supabase.from('profiles').select('*').eq('id', user.id).single()
       if (!prof) { router.replace('/setup'); return }
-
-      setUser(user)
-      setProfile(prof)
-      setAuthLoading(false)
+      setUser(user); setProfile(prof); setAuthLoading(false)
     })
   }, [router])
 
-  // ─── Load conversations ────────────────────────────────────────────────────
-
   const loadConversations = useCallback(async () => {
     if (!user) return
-
-    // Pobierz ostatnią wiadomość z każdą osobą
     const { data: msgs } = await supabase
       .from('messages')
-      .select('*, sender:profiles!messages_sender_id_fkey(id,nickname), receiver:profiles!messages_receiver_id_fkey(id,nickname)')
+      .select('*, sender:profiles!messages_sender_id_fkey(*), receiver:profiles!messages_receiver_id_fkey(*)')
       .or(`sender_id.eq.${user.id},receiver_id.eq.${user.id}`)
       .order('created_at', { ascending: false })
-
     if (!msgs) return
-
-    // Zgrupuj po rozmówcy
-    const convMap = new Map()
+    const map = new Map()
     for (const msg of msgs) {
       const otherId = msg.sender_id === user.id ? msg.receiver_id : msg.sender_id
       const otherProfile = msg.sender_id === user.id ? msg.receiver : msg.sender
-      if (!convMap.has(otherId)) {
-        convMap.set(otherId, { profile: otherProfile, lastMsg: msg })
-      }
+      if (!map.has(otherId)) map.set(otherId, { profile: otherProfile, lastMsg: msg })
     }
-    setConversations(Array.from(convMap.values()))
+    setConversations(Array.from(map.values()))
   }, [user])
 
-  useEffect(() => {
-    if (user) loadConversations()
-  }, [user, loadConversations])
-
-  // ─── Load messages for selected contact ───────────────────────────────────
+  useEffect(() => { if (user) loadConversations() }, [user, loadConversations])
 
   useEffect(() => {
     if (!selectedContact || !user) return
-
-    const loadMessages = async () => {
-      const { data } = await supabase
-        .from('messages')
-        .select('*')
-        .or(
-          `and(sender_id.eq.${user.id},receiver_id.eq.${selectedContact.id}),` +
-          `and(sender_id.eq.${selectedContact.id},receiver_id.eq.${user.id})`
-        )
+    const load = async () => {
+      const { data } = await supabase.from('messages').select('*')
+        .or(`and(sender_id.eq.${user.id},receiver_id.eq.${selectedContact.id}),and(sender_id.eq.${selectedContact.id},receiver_id.eq.${user.id})`)
         .order('created_at', { ascending: true })
-
       setMessages(data || [])
-
-      // Oznacz jako przeczytane
-      await supabase
-        .from('messages')
-        .update({ read: true })
-        .eq('sender_id', selectedContact.id)
-        .eq('receiver_id', user.id)
-        .eq('read', false)
+      await supabase.from('messages').update({ read: true }).eq('sender_id', selectedContact.id).eq('receiver_id', user.id).eq('read', false)
     }
-
-    loadMessages()
-
-    // Realtime subscription for messages
-    const channel = supabase
-      .channel(`chat:${user.id}:${selectedContact.id}`)
-      .on('postgres_changes', {
-        event: 'INSERT',
-        schema: 'public',
-        table: 'messages',
-      }, (payload) => {
+    load()
+    const ch = supabase.channel(`chat:${user.id}:${selectedContact.id}`)
+      .on('postgres_changes', { event: 'INSERT', schema: 'public', table: 'messages' }, (payload) => {
         const msg = payload.new
-        const isRelevant =
-          (msg.sender_id === user.id && msg.receiver_id === selectedContact.id) ||
-          (msg.sender_id === selectedContact.id && msg.receiver_id === user.id)
-        if (isRelevant) {
-          setMessages(prev => [...prev, msg])
-          loadConversations()
+        if ((msg.sender_id === user.id && msg.receiver_id === selectedContact.id) ||
+            (msg.sender_id === selectedContact.id && msg.receiver_id === user.id)) {
+          setMessages(prev => [...prev, msg]); loadConversations()
         }
-      })
-      .subscribe()
-
-    return () => channel.unsubscribe()
+      }).subscribe()
+    return () => ch.unsubscribe()
   }, [selectedContact, user, loadConversations])
 
-  // Scroll to bottom on new message
+  useEffect(() => { messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' }) }, [messages])
+
+  // Nasłuchuj przychodzących wywołań przez Supabase
   useEffect(() => {
-    messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' })
-  }, [messages])
+    if (!user || !profile) return
 
-  // ─── Incoming call listener ────────────────────────────────────────────────
+    // Utwórz PeerJS peer z ID opartym o user.id (skróconym)
+    const peerId = 'novu_' + user.id.replace(/-/g, '').slice(0, 16)
 
-  useEffect(() => {
-    if (!user) return
+    const peer = createPeer(peerId)
+    peerRef.current = peer
 
-    const channel = supabase
-      .channel(`incoming:${user.id}`)
-      .on('postgres_changes', {
-        event: 'INSERT',
-        schema: 'public',
-        table: 'call_signals',
-        filter: `callee_id=eq.${user.id}`,
-      }, async (payload) => {
-        const signal = payload.new
+    peer.on('open', () => {
+      console.log('[PeerJS] Ready, peer ID:', peerId)
+    })
 
-        if (signal.type === 'offer' && !callState) {
-          // Incoming call — pobierz profil dzwoniącego
-          const { data: callerProfile } = await supabase
-            .from('profiles')
-            .select('*')
-            .eq('id', signal.caller_id)
-            .single()
+    peer.on('call', async (call) => {
+      // Przychodzące połączenie
+      const callerId = call.metadata?.userId
+      if (!callerId) { call.close(); return }
 
-          setIncomingSignal({ callerId: signal.caller_id, offer: signal.payload })
-          setCallState({
-            mode: 'incoming',
-            remoteUser: callerProfile,
-            remoteStream: null,
-            iceState: null,
-          })
-        }
+      const { data: callerProfile } = await supabase.from('profiles').select('*').eq('id', callerId).single()
+      const isVideo = call.metadata?.withVideo || false
+
+      setCallState({
+        mode: 'incoming',
+        remoteUser: callerProfile,
+        remoteStream: null,
+        localStream: null,
+        isVideo,
+        _call: call,
       })
-      .subscribe()
+    })
 
-    return () => channel.unsubscribe()
-  }, [user, callState])
+    peer.on('error', (err) => {
+      if (err.type === 'unavailable-id') {
+        // Spróbuj z innym ID
+        console.warn('[PeerJS] ID unavailable, reconnecting...')
+      }
+      console.error('[PeerJS] Error:', err)
+    })
 
-  // ─── Send message ──────────────────────────────────────────────────────────
+    peer.on('disconnected', () => {
+      setTimeout(() => { if (peerRef.current && !peerRef.current.destroyed) peerRef.current.reconnect() }, 2000)
+    })
+
+    return () => {
+      peer.destroy()
+      peerRef.current = null
+    }
+  }, [user, profile])
+
+  useEffect(() => {
+    if (!searchQuery.trim() || searchQuery.length < 2) { setSearchResults([]); return }
+    const t = setTimeout(async () => {
+      setSearching(true)
+      const { data } = await supabase.from('profiles').select('*').ilike('nickname', `%${searchQuery}%`).neq('id', user?.id).limit(10)
+      setSearchResults(data || []); setSearching(false)
+    }, 400)
+    return () => clearTimeout(t)
+  }, [searchQuery, user])
 
   const sendMessage = async (e) => {
     e.preventDefault()
     if (!newMsg.trim() || !selectedContact || !user) return
-
-    setSendingMsg(true)
-    const content = newMsg.trim()
-    setNewMsg('')
-
-    const { error } = await supabase.from('messages').insert({
-      sender_id: user.id,
-      receiver_id: selectedContact.id,
-      content,
-    })
-
-    if (error) {
-      setNewMsg(content)
-      alert('Błąd wysyłania wiadomości: ' + error.message)
-    } else {
-      loadConversations()
-    }
-
-    setSendingMsg(false)
+    const content = newMsg.trim(); setNewMsg('')
+    const { error } = await supabase.from('messages').insert({ sender_id: user.id, receiver_id: selectedContact.id, content })
+    if (error) { setNewMsg(content); alert('Błąd: ' + error.message) }
+    else loadConversations()
   }
 
-  // ─── Search users ──────────────────────────────────────────────────────────
-
-  useEffect(() => {
-    if (!searchQuery.trim() || searchQuery.length < 2) {
-      setSearchResults([])
-      return
-    }
-
-    const timer = setTimeout(async () => {
-      setSearching(true)
-      const { data } = await supabase
-        .from('profiles')
-        .select('*')
-        .ilike('nickname', `%${searchQuery}%`)
-        .neq('id', user?.id)
-        .limit(10)
-
-      setSearchResults(data || [])
-      setSearching(false)
-    }, 400)
-
-    return () => clearTimeout(timer)
-  }, [searchQuery, user])
-
-  // ─── Voice call — start ────────────────────────────────────────────────────
-
-  const startCall = async (remoteUser) => {
-    if (!user) return
-
-    callManagerRef.current = new VoiceCallManager(supabase, user.id)
-
-    callManagerRef.current.onRemoteStream = (stream) => {
-      setCallState(prev => ({ ...prev, remoteStream: stream }))
-    }
-    callManagerRef.current.onCallEnded = () => {
-      setCallState(null)
-      callManagerRef.current = null
-    }
-    callManagerRef.current.onIceStateChange = (state) => {
-      setCallState(prev => {
-        if (!prev) return null
-        const mode = (state === 'connected' || state === 'completed') ? 'active' : prev.mode
-        return { ...prev, iceState: state, mode }
-      })
-    }
-
-    setCallState({ mode: 'calling', remoteUser, remoteStream: null, iceState: null })
-
+  const startCall = async (remoteUser, withVideo = false) => {
+    if (!user || !peerRef.current) return
     try {
-      await callManagerRef.current.startCall(remoteUser.id)
+      const stream = await getMedia(withVideo)
+      localStreamRef.current = stream
+      setMicEnabled(true); setCamEnabled(true)
+
+      const remotePeerId = 'novu_' + remoteUser.id.replace(/-/g, '').slice(0, 16)
+      const call = peerRef.current.call(remotePeerId, stream, {
+        metadata: { userId: user.id, withVideo }
+      })
+      currentCallRef.current = call
+
+      setCallState({ mode: 'calling', remoteUser, remoteStream: null, localStream: stream, isVideo: withVideo })
+
+      call.on('stream', (remoteStream) => {
+        setCallState(prev => prev ? { ...prev, mode: 'active', remoteStream } : null)
+      })
+      call.on('close', () => {
+        localStreamRef.current?.getTracks().forEach(t => t.stop())
+        localStreamRef.current = null
+        currentCallRef.current = null
+        setCallState(null)
+      })
+      call.on('error', (err) => {
+        console.error('[Call] error:', err)
+        endCall()
+      })
     } catch (err) {
       alert(err.message)
       setCallState(null)
-      callManagerRef.current = null
     }
   }
-
-  // ─── Voice call — answer ───────────────────────────────────────────────────
 
   const answerCall = async () => {
-    if (!user || !incomingSignal) return
-
-    callManagerRef.current = new VoiceCallManager(supabase, user.id)
-
-    callManagerRef.current.onRemoteStream = (stream) => {
-      setCallState(prev => ({ ...prev, remoteStream: stream }))
-    }
-    callManagerRef.current.onCallEnded = () => {
-      setCallState(null)
-      callManagerRef.current = null
-    }
-    callManagerRef.current.onIceStateChange = (state) => {
-      setCallState(prev => {
-        if (!prev) return null
-        const mode = (state === 'connected' || state === 'completed') ? 'active' : prev.mode
-        return { ...prev, iceState: state, mode }
-      })
-    }
-
-    setCallState(prev => ({ ...prev, mode: 'active' }))
-
+    const call = callState?._call
+    if (!call) return
     try {
-      await callManagerRef.current.answerCall(incomingSignal.callerId, incomingSignal.offer)
-      setIncomingSignal(null)
+      const stream = await getMedia(callState.isVideo)
+      localStreamRef.current = stream
+      setMicEnabled(true); setCamEnabled(true)
+
+      call.answer(stream)
+      currentCallRef.current = call
+
+      setCallState(prev => ({ ...prev, mode: 'active', localStream: stream, _call: undefined }))
+
+      call.on('stream', (remoteStream) => {
+        setCallState(prev => prev ? { ...prev, remoteStream } : null)
+      })
+      call.on('close', () => {
+        localStreamRef.current?.getTracks().forEach(t => t.stop())
+        localStreamRef.current = null
+        currentCallRef.current = null
+        setCallState(null)
+      })
     } catch (err) {
       alert(err.message)
       setCallState(null)
-      callManagerRef.current = null
     }
   }
 
-  // ─── Voice call — end ──────────────────────────────────────────────────────
-
-  const endCall = async () => {
-    if (callManagerRef.current) {
-      const remoteId = callState?.remoteUser?.id || incomingSignal?.callerId
-      await callManagerRef.current.endCall(remoteId)
-      callManagerRef.current = null
-    }
+  const endCall = () => {
+    currentCallRef.current?.close()
+    currentCallRef.current = null
+    localStreamRef.current?.getTracks().forEach(t => t.stop())
+    localStreamRef.current = null
     setCallState(null)
-    setIncomingSignal(null)
+    setMicEnabled(true); setCamEnabled(true)
   }
 
-  // ─── Logout ────────────────────────────────────────────────────────────────
-
-  const logout = async () => {
-    await endCall()
-    await supabase.auth.signOut()
-    router.replace('/')
+  const toggleMic = () => {
+    if (!localStreamRef.current) return
+    const enabled = !micEnabled
+    localStreamRef.current.getAudioTracks().forEach(t => { t.enabled = enabled })
+    setMicEnabled(enabled)
   }
 
-  // ─── Render ────────────────────────────────────────────────────────────────
+  const toggleCam = () => {
+    if (!localStreamRef.current) return
+    const enabled = !camEnabled
+    localStreamRef.current.getVideoTracks().forEach(t => { t.enabled = enabled })
+    setCamEnabled(enabled)
+  }
 
-  if (authLoading) {
-    return (
-      <div style={{ minHeight: '100vh', display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
-        <div className="spinner" style={{ width: 32, height: 32 }} />
+  const logout = async () => { await endCall(); await supabase.auth.signOut(); router.replace('/login') }
+  const selectContact = (p) => { setSelectedContact(p); if (isMobile) setMobileView('chat') }
+
+  if (authLoading) return (
+    <div style={{ minHeight: '100vh', display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
+      <div className="spinner" style={{ width: 32, height: 32 }} />
+    </div>
+  )
+
+  // ── Sidebar ─────────────────────────────────────────────────────────────────
+  const SidebarContent = (
+    <div style={{ display: 'flex', flexDirection: 'column', height: isMobile ? 'auto' : '100%' }}>
+      {!isMobile && (
+        <>
+          <div style={{ padding: '16px 14px', borderBottom: '1px solid var(--border)', display: 'flex', alignItems: 'center', gap: 10 }}>
+            <NovuMark size={32} />
+            <NovuWordmark height={20} />
+          </div>
+          <div style={{ display: 'flex', borderBottom: '1px solid var(--border)' }}>
+            {['chats','search'].map(t => (
+              <button key={t} onClick={() => setSidebarTab(t)} style={{
+                flex: 1, padding: '10px 0', background: 'none', border: 'none',
+                color: sidebarTab === t ? 'var(--primary)' : 'var(--text-muted)',
+                fontFamily: 'Inter,sans-serif', fontWeight: 600, fontSize: 12,
+                cursor: 'pointer', borderBottom: `2px solid ${sidebarTab === t ? 'var(--primary)' : 'transparent'}`,
+                textTransform: 'uppercase', letterSpacing: '0.5px', transition: 'color 0.2s',
+              }}>
+                {t === 'chats' ? '💬 Czaty' : '🔍 Szukaj'}
+              </button>
+            ))}
+          </div>
+        </>
+      )}
+
+      <div style={{ flex: 1, overflowY: 'auto', padding: '6px 0' }}>
+        {(sidebarTab === 'chats' || isMobile) ? (
+          <>
+            {isMobile && (
+              <div style={{ padding: '10px 12px' }}>
+                <input className="input" placeholder="Szukaj po nicku..." value={searchQuery}
+                  onChange={e => setSearchQuery(e.target.value)} style={{ fontSize: 14 }} />
+              </div>
+            )}
+            {searchQuery.length >= 2 ? (
+              <>
+                {searching && <div style={{ textAlign: 'center', padding: 16 }}><div className="spinner" style={{ margin: 'auto' }} /></div>}
+                {!searching && searchResults.length === 0 && <div style={{ padding: '12px 16px', color: 'var(--text-muted)', fontSize: 14 }}>Nie znaleziono.</div>}
+                {searchResults.map(p => (
+                  <ContactRow key={p.id} profile={p} subtitle={p.email} active={selectedContact?.id === p.id}
+                    onClick={() => { selectContact(p); setSearchQuery('') }} />
+                ))}
+              </>
+            ) : (
+              <>
+                {conversations.length === 0 && (
+                  <div style={{ padding: 24, textAlign: 'center', color: 'var(--text-muted)', fontSize: 14, lineHeight: 1.7 }}>
+                    Brak rozmów.<br />
+                    <span onClick={() => setSidebarTab('search')} style={{ color: 'var(--primary)', cursor: 'pointer', fontWeight: 600 }}>Znajdź kogoś</span> po nicku!
+                  </div>
+                )}
+                {conversations.map(({ profile: p, lastMsg }) => (
+                  <ContactRow key={p.id} profile={p} subtitle={lastMsg?.content} active={selectedContact?.id === p.id} onClick={() => selectContact(p)} />
+                ))}
+              </>
+            )}
+          </>
+        ) : (
+          <div style={{ padding: '10px 12px' }}>
+            <input className="input" placeholder="Szukaj po nicku..." value={searchQuery}
+              onChange={e => setSearchQuery(e.target.value)} autoFocus style={{ marginBottom: 8 }} />
+            {searching && <div style={{ textAlign: 'center', padding: 16 }}><div className="spinner" style={{ margin: 'auto' }} /></div>}
+            {!searching && searchQuery.length >= 2 && searchResults.length === 0 && <div style={{ padding: '12px 4px', color: 'var(--text-muted)', fontSize: 14 }}>Nie znaleziono „{searchQuery}".</div>}
+            {searchResults.map(p => (
+              <ContactRow key={p.id} profile={p} subtitle={p.email} active={selectedContact?.id === p.id}
+                onClick={() => { selectContact(p); setSidebarTab('chats'); setSearchQuery(''); setSearchResults([]) }} />
+            ))}
+          </div>
+        )}
       </div>
-    )
-  }
+
+      {!isMobile && (
+        <div style={{ borderTop: '1px solid var(--border)', padding: '10px 10px' }}>
+          <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+            <button onClick={() => setShowProfile(true)} style={{
+              flex: 1, display: 'flex', alignItems: 'center', gap: 10,
+              background: 'none', border: 'none', borderRadius: 12, padding: '8px 10px',
+              cursor: 'pointer', transition: 'background 0.15s', textAlign: 'left',
+            }}
+              onMouseEnter={e => e.currentTarget.style.background = 'var(--surface-2)'}
+              onMouseLeave={e => e.currentTarget.style.background = 'none'}
+            >
+              <Avatar profile={profile} size={34} />
+              <div style={{ overflow: 'hidden' }}>
+                <div style={{ fontWeight: 700, fontSize: 13, color: 'var(--text)' }}>@{profile?.nickname}</div>
+                <div style={{ fontSize: 11, color: 'var(--text-muted)' }}>Profil i ustawienia</div>
+              </div>
+            </button>
+            <button onClick={logout} title="Wyloguj" style={{
+              background: 'none', border: 'none', borderRadius: 10, padding: '8px',
+              cursor: 'pointer', color: 'var(--text-muted)', fontSize: 18, transition: 'color 0.2s',
+            }}
+              onMouseEnter={e => e.currentTarget.style.color = 'var(--red)'}
+              onMouseLeave={e => e.currentTarget.style.color = 'var(--text-muted)'}
+            >🚪</button>
+          </div>
+        </div>
+      )}
+    </div>
+  )
+
+  // ── Chat view ────────────────────────────────────────────────────────────────
+  const ChatView = (
+    <div style={{ flex: 1, display: 'flex', flexDirection: 'column', height: '100%', overflow: 'hidden' }}>
+      {selectedContact ? (
+        <>
+          <div style={{ padding: '12px 16px', borderBottom: '1px solid var(--border)', display: 'flex', alignItems: 'center', gap: 12, background: 'var(--surface)', flexShrink: 0 }}>
+            {isMobile && (
+              <button onClick={() => { setMobileView('list'); setSelectedContact(null) }} style={{ background: 'none', border: 'none', color: 'var(--text-muted)', cursor: 'pointer', fontSize: 20, padding: '0 4px 0 0' }}>←</button>
+            )}
+            <Avatar profile={selectedContact} />
+            <div style={{ flex: 1 }}>
+              <div style={{ fontWeight: 700, fontSize: 15 }}>@{selectedContact.nickname}</div>
+              <div style={{ fontSize: 12, color: 'var(--text-muted)' }}>{selectedContact.email}</div>
+            </div>
+            <button onClick={() => startCall(selectedContact, false)} disabled={!!callState} title="Głos" style={{ width: 38, height: 38, borderRadius: '50%', background: callState ? 'var(--surface-3)' : 'rgba(0,229,160,0.15)', border: 'none', fontSize: 17, cursor: callState ? 'not-allowed' : 'pointer', display: 'flex', alignItems: 'center', justifyContent: 'center', opacity: callState ? 0.4 : 1 }}>🎙️</button>
+            <button onClick={() => startCall(selectedContact, true)} disabled={!!callState} title="Wideo" style={{ width: 38, height: 38, borderRadius: '50%', background: callState ? 'var(--surface-3)' : 'rgba(108,99,255,0.15)', border: 'none', fontSize: 17, cursor: callState ? 'not-allowed' : 'pointer', display: 'flex', alignItems: 'center', justifyContent: 'center', opacity: callState ? 0.4 : 1 }}>📹</button>
+          </div>
+
+          <div style={{ flex: 1, overflowY: 'auto', padding: '16px 16px 8px', display: 'flex', flexDirection: 'column', gap: 6 }}>
+            {messages.length === 0 && (
+              <div style={{ flex: 1, display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', color: 'var(--text-muted)', fontSize: 14, gap: 8 }}>
+                <span style={{ fontSize: 32 }}>👋</span>Napisz pierwszą wiadomość!
+              </div>
+            )}
+            {messages.map((msg, i) => {
+              const isOwn = msg.sender_id === user.id
+              const prev = messages[i - 1]
+              const showTime = !prev || new Date(msg.created_at) - new Date(prev.created_at) > 5 * 60 * 1000
+              return (
+                <div key={msg.id}>
+                  {showTime && <div style={{ textAlign: 'center', fontSize: 11, color: 'var(--text-muted)', margin: '8px 0' }}>{formatTime(msg.created_at)}</div>}
+                  <div className={isOwn ? 'msg-out' : 'msg-in'}>{msg.content}</div>
+                </div>
+              )
+            })}
+            <div ref={messagesEndRef} />
+          </div>
+
+          <form onSubmit={sendMessage} style={{ padding: '10px 12px', borderTop: '1px solid var(--border)', display: 'flex', gap: 8, alignItems: 'center', background: 'var(--surface)', flexShrink: 0 }}>
+            <input className="input" placeholder={`Napisz do @${selectedContact.nickname}...`} value={newMsg}
+              onChange={e => setNewMsg(e.target.value)} style={{ flex: 1, fontSize: 14, padding: '11px 14px' }}
+              onKeyDown={e => { if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); sendMessage(e) } }} />
+            <button type="submit" disabled={!newMsg.trim()} style={{
+              width: 42, height: 42, borderRadius: '50%', flexShrink: 0, border: 'none',
+              background: newMsg.trim() ? 'var(--primary)' : 'var(--surface-3)',
+              cursor: newMsg.trim() ? 'pointer' : 'default', fontSize: 18,
+              display: 'flex', alignItems: 'center', justifyContent: 'center', transition: 'background 0.2s',
+            }}>➤</button>
+          </form>
+        </>
+      ) : (
+        <div style={{ flex: 1, display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', gap: 14 }}>
+          <NovuMark size={56} />
+          <div style={{ textAlign: 'center' }}>
+            <h2 style={{ fontFamily: 'Space Grotesk,sans-serif', fontSize: 20, fontWeight: 800, color: 'var(--text)', marginBottom: 8 }}>Witaj w Novu</h2>
+            <p style={{ fontSize: 14, color: 'var(--text-muted)', maxWidth: 240, lineHeight: 1.6 }}>
+              Wybierz rozmowę lub{' '}
+              <span onClick={() => setSidebarTab('search')} style={{ color: 'var(--primary)', cursor: 'pointer', fontWeight: 600 }}>znajdź użytkownika</span>.
+            </p>
+          </div>
+        </div>
+      )}
+    </div>
+  )
 
   return (
     <>
       <Head>
-        <title>VoiceChat</title>
+        <title>Novu</title>
+        <meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1" />
       </Head>
 
-      {/* Call overlay */}
       {callState && (
         <CallModal
           mode={callState.mode}
           remoteUser={callState.remoteUser}
           remoteStream={callState.remoteStream}
-          iceState={callState.iceState}
+          localStream={callState.localStream}
+          isVideo={callState.isVideo}
+          micEnabled={micEnabled}
+          camEnabled={camEnabled}
           onAnswer={answerCall}
           onDecline={endCall}
           onEnd={endCall}
+          onToggleMic={toggleMic}
+          onToggleCam={toggleCam}
         />
       )}
 
-      {/* Main layout */}
-      <div style={{ display: 'flex', height: '100vh', overflow: 'hidden' }}>
+      {showProfile && (
+        <ProfileModal user={user} profile={profile} onClose={() => setShowProfile(false)}
+          onProfileUpdated={(updated) => { setProfile(updated) }} />
+      )}
 
-        {/* ── Sidebar ─────────────────────────────────────────────────────── */}
-        <aside style={{
-          width: 300, flexShrink: 0,
-          background: 'var(--surface)',
-          borderRight: '1px solid var(--border)',
-          display: 'flex', flexDirection: 'column',
-        }}>
-
-          {/* Mój profil */}
-          <div style={{
-            padding: '18px 16px',
-            borderBottom: '1px solid var(--border)',
-            display: 'flex', alignItems: 'center', gap: 10,
-          }}>
-            <Avatar nickname={profile?.nickname} />
-            <div style={{ flex: 1, overflow: 'hidden' }}>
-              <div style={{ fontWeight: 700, fontSize: 15, truncate: true }}>
-                @{profile?.nickname}
-              </div>
-              <div style={{ fontSize: 12, color: 'var(--text-muted)' }}>
-                {profile?.email}
-              </div>
-            </div>
-            <button
-              onClick={logout}
-              title="Wyloguj"
-              style={{
-                background: 'none', border: 'none',
-                color: 'var(--text-muted)', cursor: 'pointer',
-                fontSize: 18, padding: 4, borderRadius: 6,
-                transition: 'color 0.2s',
-              }}
-              onMouseEnter={e => e.currentTarget.style.color = 'var(--red)'}
-              onMouseLeave={e => e.currentTarget.style.color = 'var(--text-muted)'}
-            >
-              ⬡
-            </button>
-          </div>
-
-          {/* Tabs */}
-          <div style={{
-            display: 'flex',
-            borderBottom: '1px solid var(--border)',
-          }}>
-            {['chats', 'search'].map(tab => (
-              <button
-                key={tab}
-                onClick={() => setSidebarTab(tab)}
-                style={{
-                  flex: 1, padding: '10px 0',
-                  background: 'none', border: 'none',
-                  color: sidebarTab === tab ? 'var(--primary)' : 'var(--text-muted)',
-                  fontFamily: 'Nunito, sans-serif',
-                  fontWeight: 700, fontSize: 13,
-                  cursor: 'pointer',
-                  borderBottom: `2px solid ${sidebarTab === tab ? 'var(--primary)' : 'transparent'}`,
-                  textTransform: 'uppercase', letterSpacing: '0.5px',
-                  transition: 'color 0.2s',
-                }}
-              >
-                {tab === 'chats' ? '💬 Czaty' : '🔍 Szukaj'}
-              </button>
-            ))}
-          </div>
-
-          {/* Content */}
-          <div style={{ flex: 1, overflowY: 'auto', padding: '8px 0' }}>
-            {sidebarTab === 'chats' ? (
-              <>
-                {conversations.length === 0 ? (
-                  <div style={{
-                    padding: 24, textAlign: 'center',
-                    color: 'var(--text-muted)', fontSize: 14, lineHeight: 1.7,
-                  }}>
-                    Brak rozmów.<br />
-                    <span
-                      onClick={() => setSidebarTab('search')}
-                      style={{ color: 'var(--primary)', cursor: 'pointer', fontWeight: 600 }}
-                    >
-                      Znajdź kogoś
-                    </span>
-                    {' '}po nicku i napisz!
-                  </div>
-                ) : (
-                  conversations.map(({ profile: p, lastMsg }) => (
-                    <ContactRow
-                      key={p.id}
-                      profile={p}
-                      subtitle={lastMsg?.content}
-                      active={selectedContact?.id === p.id}
-                      onClick={() => setSelectedContact(p)}
-                    />
-                  ))
-                )}
-              </>
-            ) : (
-              <div style={{ padding: '10px 12px' }}>
-                <input
-                  className="input"
-                  placeholder="Szukaj po nicku..."
-                  value={searchQuery}
-                  onChange={e => setSearchQuery(e.target.value)}
-                  autoFocus
-                  style={{ marginBottom: 8 }}
-                />
-                {searching && (
-                  <div style={{ textAlign: 'center', padding: 16 }}>
-                    <div className="spinner" style={{ margin: 'auto' }} />
-                  </div>
-                )}
-                {!searching && searchQuery.length >= 2 && searchResults.length === 0 && (
-                  <div style={{ padding: '12px 4px', color: 'var(--text-muted)', fontSize: 14 }}>
-                    Nie znaleziono użytkownika „{searchQuery}".
-                  </div>
-                )}
-                {searchResults.map(p => (
-                  <ContactRow
-                    key={p.id}
-                    profile={p}
-                    subtitle={p.email}
-                    active={selectedContact?.id === p.id}
-                    onClick={() => {
-                      setSelectedContact(p)
-                      setSidebarTab('chats')
-                      setSearchQuery('')
-                      setSearchResults([])
-                    }}
-                  />
-                ))}
-              </div>
-            )}
-          </div>
-        </aside>
-
-        {/* ── Chat area ───────────────────────────────────────────────────── */}
-        <main style={{ flex: 1, display: 'flex', flexDirection: 'column', overflow: 'hidden' }}>
-          {selectedContact ? (
-            <>
-              {/* Chat header */}
-              <div style={{
-                padding: '14px 20px',
-                borderBottom: '1px solid var(--border)',
-                display: 'flex', alignItems: 'center', gap: 12,
-                background: 'var(--surface)',
-              }}>
-                <Avatar nickname={selectedContact.nickname} />
-                <div style={{ flex: 1 }}>
-                  <div style={{ fontWeight: 700, fontSize: 16 }}>
-                    @{selectedContact.nickname}
-                  </div>
-                  <div style={{ fontSize: 12, color: 'var(--text-muted)' }}>
-                    {selectedContact.email}
-                  </div>
-                </div>
-
-                {/* Call button */}
-                <button
-                  onClick={() => startCall(selectedContact)}
-                  disabled={!!callState}
-                  title="Zadzwoń"
-                  style={{
-                    width: 40, height: 40, borderRadius: '50%',
-                    background: callState ? 'var(--surface-3)' : 'var(--green)',
-                    border: 'none', fontSize: 18, cursor: callState ? 'not-allowed' : 'pointer',
-                    display: 'flex', alignItems: 'center', justifyContent: 'center',
-                    transition: 'background 0.2s, transform 0.1s',
-                    opacity: callState ? 0.5 : 1,
-                  }}
-                  onMouseEnter={e => { if (!callState) e.currentTarget.style.transform = 'scale(1.1)' }}
-                  onMouseLeave={e => e.currentTarget.style.transform = ''}
-                >
-                  📞
-                </button>
-              </div>
-
-              {/* Messages */}
-              <div style={{
-                flex: 1, overflowY: 'auto',
-                padding: '20px 20px 10px',
-                display: 'flex', flexDirection: 'column', gap: 8,
-              }}>
-                {messages.length === 0 && (
-                  <div style={{
-                    flex: 1, display: 'flex', alignItems: 'center',
-                    justifyContent: 'center', color: 'var(--text-muted)',
-                    fontSize: 14, flexDirection: 'column', gap: 8, opacity: 0.7,
-                  }}>
-                    <span style={{ fontSize: 32 }}>👋</span>
-                    Napisz pierwszą wiadomość do @{selectedContact.nickname}!
-                  </div>
-                )}
-                {messages.map((msg, i) => {
-                  const isOwn = msg.sender_id === user.id
-                  const prevMsg = messages[i - 1]
-                  const showTime = !prevMsg || (
-                    new Date(msg.created_at) - new Date(prevMsg.created_at) > 5 * 60 * 1000
-                  )
-                  return (
-                    <div key={msg.id}>
-                      {showTime && (
-                        <div style={{
-                          textAlign: 'center', fontSize: 11.5,
-                          color: 'var(--text-muted)', margin: '8px 0',
-                        }}>
-                          {formatTime(msg.created_at)}
-                        </div>
-                      )}
-                      <div className={isOwn ? 'msg-out' : 'msg-in'}
-                        style={{ animation: 'fadeIn 0.2s ease' }}
-                      >
-                        {msg.content}
-                      </div>
-                    </div>
-                  )
-                })}
-                <div ref={messagesEndRef} />
-              </div>
-
-              {/* Message input */}
-              <form
-                onSubmit={sendMessage}
-                style={{
-                  padding: '12px 16px',
-                  borderTop: '1px solid var(--border)',
-                  display: 'flex', gap: 10, alignItems: 'center',
-                  background: 'var(--surface)',
-                }}
-              >
-                <input
-                  className="input"
-                  placeholder={`Napisz do @${selectedContact.nickname}...`}
-                  value={newMsg}
-                  onChange={e => setNewMsg(e.target.value)}
-                  style={{ flex: 1 }}
-                  onKeyDown={e => {
-                    if (e.key === 'Enter' && !e.shiftKey) {
-                      e.preventDefault()
-                      sendMessage(e)
-                    }
-                  }}
-                />
-                <button
-                  type="submit"
-                  disabled={!newMsg.trim() || sendingMsg}
-                  style={{
-                    width: 42, height: 42, borderRadius: '50%',
-                    background: newMsg.trim() ? 'var(--primary)' : 'var(--surface-3)',
-                    border: 'none', cursor: newMsg.trim() ? 'pointer' : 'default',
-                    display: 'flex', alignItems: 'center', justifyContent: 'center',
-                    fontSize: 18, flexShrink: 0,
-                    transition: 'background 0.2s, transform 0.1s',
-                    boxShadow: newMsg.trim() ? '0 2px 12px var(--primary-glow)' : 'none',
-                  }}
-                  onMouseEnter={e => { if (newMsg.trim()) e.currentTarget.style.transform = 'scale(1.08)' }}
-                  onMouseLeave={e => e.currentTarget.style.transform = ''}
-                >
-                  {sendingMsg ? <div className="spinner" style={{ width: 16, height: 16 }} /> : '➤'}
-                </button>
-              </form>
-            </>
-          ) : (
-            // Empty state
-            <div style={{
-              flex: 1, display: 'flex', flexDirection: 'column',
-              alignItems: 'center', justifyContent: 'center',
-              gap: 12, color: 'var(--text-muted)',
-            }}>
-              <div style={{ fontSize: 52 }}>🎙️</div>
-              <h2 style={{
-                fontFamily: 'Syne, sans-serif',
-                fontSize: 22, fontWeight: 800, color: 'var(--text)',
-              }}>
-                VoiceChat
-              </h2>
-              <p style={{ fontSize: 15, textAlign: 'center', maxWidth: 280, lineHeight: 1.6 }}>
-                Wybierz rozmowę z listy lub{' '}
-                <span
-                  onClick={() => setSidebarTab('search')}
-                  style={{ color: 'var(--primary)', cursor: 'pointer', fontWeight: 600 }}
-                >
-                  znajdź użytkownika
-                </span>
-                {' '}po nicku.
-              </p>
-            </div>
-          )}
-        </main>
-      </div>
-    </>
-  )
-}
-
-// ─── Contact row component ──────────────────────────────────────────────────
-
-function ContactRow({ profile, subtitle, active, onClick }) {
-  return (
-    <div
-      onClick={onClick}
-      style={{
-        display: 'flex', alignItems: 'center', gap: 10,
-        padding: '10px 14px', cursor: 'pointer',
-        background: active ? 'var(--surface-3)' : 'transparent',
-        borderLeft: `3px solid ${active ? 'var(--primary)' : 'transparent'}`,
-        transition: 'background 0.15s',
-      }}
-      onMouseEnter={e => { if (!active) e.currentTarget.style.background = 'var(--surface-2)' }}
-      onMouseLeave={e => { if (!active) e.currentTarget.style.background = 'transparent' }}
-    >
-      <Avatar nickname={profile?.nickname} />
-      <div style={{ flex: 1, overflow: 'hidden' }}>
-        <div style={{ fontWeight: 700, fontSize: 14 }}>
-          @{profile?.nickname}
+      {/* Desktop */}
+      {!isMobile && (
+        <div style={{ display: 'flex', height: '100vh', overflow: 'hidden' }}>
+          <aside style={{ width: 280, flexShrink: 0, background: 'var(--surface)', borderRight: '1px solid var(--border)', display: 'flex', flexDirection: 'column', overflow: 'hidden' }}>
+            {SidebarContent}
+          </aside>
+          {ChatView}
         </div>
-        {subtitle && (
-          <div style={{
-            fontSize: 12.5, color: 'var(--text-muted)',
-            whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis',
-            maxWidth: 180,
-          }}>
-            {subtitle}
+      )}
+
+      {/* Mobile */}
+      {isMobile && (
+        <div style={{ display: 'flex', flexDirection: 'column', height: '100dvh', overflow: 'hidden' }}>
+          <div style={{ background: 'var(--surface)', borderBottom: '1px solid var(--border)', padding: '12px 16px', display: 'flex', alignItems: 'center', justifyContent: 'space-between', flexShrink: 0 }}>
+            <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+              <NovuMark size={28} />
+              <NovuWordmark height={18} />
+            </div>
+            <div style={{ display: 'flex', gap: 8, alignItems: 'center' }}>
+              <button onClick={() => setShowProfile(true)} style={{ background: 'none', border: 'none', cursor: 'pointer', padding: 0 }}>
+                <Avatar profile={profile} size={32} />
+              </button>
+              <button onClick={logout} style={{ background: 'none', border: 'none', color: 'var(--text-muted)', cursor: 'pointer', fontSize: 20 }}>🚪</button>
+            </div>
           </div>
-        )}
-      </div>
-    </div>
+          <div style={{ flex: 1, overflow: 'hidden', display: 'flex', flexDirection: 'column' }}>
+            {mobileView === 'list' ? (
+              <div style={{ flex: 1, overflowY: 'auto', background: 'var(--surface)' }}>{SidebarContent}</div>
+            ) : ChatView}
+          </div>
+        </div>
+      )}
+    </>
   )
 }

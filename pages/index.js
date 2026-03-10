@@ -1,157 +1,149 @@
-import { useState } from 'react'
 import Head from 'next/head'
-import { supabase } from '../lib/supabaseClient'
+import Link from 'next/link'
+import { NovuMark, NovuWordmark } from '../components/NovuLogo'
 
-export default function LoginPage() {
-  const [email, setEmail] = useState('')
-  const [loading, setLoading] = useState(false)
-  const [sent, setSent] = useState(false)
-  const [error, setError] = useState('')
-
-  const handleSendLink = async (e) => {
-    e.preventDefault()
-    if (!email.trim()) return
-
-    setLoading(true)
-    setError('')
-
-    const { error } = await supabase.auth.signInWithOtp({
-      email: email.trim().toLowerCase(),
-      options: {
-        // Po kliknięciu w link, użytkownik zostanie przekierowany tutaj:
-        emailRedirectTo: `${window.location.origin}/auth/callback`,
-      },
-    })
-
-    setLoading(false)
-
-    if (error) {
-      setError(error.message)
-    } else {
-      setSent(true)
-    }
-  }
-
+export default function LandingPage() {
   return (
     <>
       <Head>
-        <title>VoiceChat — Logowanie</title>
+        <title>Novu — Komunikator głosowy i wideo</title>
+        <meta name="viewport" content="width=device-width, initial-scale=1" />
+        <meta name="description" content="Novu to prywatny komunikator do rozmów głosowych i wideo ze znajomymi. Darmowy, bez reklam." />
       </Head>
 
       <div style={{
-        minHeight: '100vh',
-        display: 'flex',
-        alignItems: 'center',
-        justifyContent: 'center',
-        padding: '24px',
-        background: 'radial-gradient(ellipse at 60% 20%, rgba(124,106,247,0.12) 0%, transparent 60%), var(--bg)',
+        minHeight: '100dvh',
+        background: 'radial-gradient(ellipse at 60% 10%, rgba(108,99,255,0.15) 0%, transparent 55%), radial-gradient(ellipse at 10% 80%, rgba(0,212,255,0.08) 0%, transparent 50%), var(--bg)',
+        fontFamily: 'Inter, sans-serif',
+        color: 'var(--text)',
       }}>
-        {/* Decorative blobs */}
-        <div style={{
-          position: 'fixed', top: '10%', right: '15%',
-          width: 300, height: 300, borderRadius: '50%',
-          background: 'radial-gradient(circle, rgba(124,106,247,0.07) 0%, transparent 70%)',
-          pointerEvents: 'none',
-        }} />
-        <div style={{
-          position: 'fixed', bottom: '15%', left: '10%',
-          width: 200, height: 200, borderRadius: '50%',
-          background: 'radial-gradient(circle, rgba(34,211,238,0.07) 0%, transparent 70%)',
-          pointerEvents: 'none',
-        }} />
 
-        <div className="card animate-fade-in" style={{ width: '100%', maxWidth: 420 }}>
-          {/* Logo */}
-          <div style={{ textAlign: 'center', marginBottom: 32 }}>
-            <div style={{
-              width: 64, height: 64, borderRadius: '18px',
-              background: 'linear-gradient(135deg, var(--primary), var(--accent))',
-              display: 'inline-flex', alignItems: 'center', justifyContent: 'center',
-              fontSize: 28, marginBottom: 16,
-              boxShadow: '0 8px 32px var(--primary-glow)',
-            }}>
-              🎙️
-            </div>
-            <h1 style={{
-              fontFamily: 'Syne, sans-serif',
-              fontSize: 28, fontWeight: 800,
-              color: 'var(--text)', marginBottom: 8,
-            }}>
-              VoiceChat
-            </h1>
-            <p style={{ color: 'var(--text-muted)', fontSize: 15 }}>
-              Wpisz e-mail, wyślemy Ci link do logowania
-            </p>
+        {/* Nav */}
+        <nav style={{
+          display: 'flex', alignItems: 'center', justifyContent: 'space-between',
+          padding: '20px 32px',
+          borderBottom: '1px solid var(--border)',
+        }}>
+          <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
+            <NovuMark size={32} />
+            <NovuWordmark height={20} />
+          </div>
+          <Link href="/login" style={{
+            background: 'var(--primary)',
+            color: 'white',
+            padding: '10px 22px',
+            borderRadius: 'var(--radius)',
+            textDecoration: 'none',
+            fontWeight: 700,
+            fontSize: 14,
+          }}>
+            Zaloguj się
+          </Link>
+        </nav>
+
+        {/* Hero */}
+        <div style={{
+          maxWidth: 720,
+          margin: '0 auto',
+          padding: '80px 32px 60px',
+          textAlign: 'center',
+        }}>
+          <div style={{
+            display: 'inline-block',
+            background: 'rgba(108,99,255,0.12)',
+            border: '1px solid rgba(108,99,255,0.3)',
+            borderRadius: 20,
+            padding: '6px 16px',
+            fontSize: 13,
+            fontWeight: 600,
+            color: 'var(--primary)',
+            marginBottom: 28,
+          }}>
+            🔒 Prywatny komunikator
           </div>
 
-          {!sent ? (
-            <form onSubmit={handleSendLink} style={{ display: 'flex', flexDirection: 'column', gap: 14 }}>
-              <input
-                className="input"
-                type="email"
-                placeholder="twoj@email.com"
-                value={email}
-                onChange={(e) => setEmail(e.target.value)}
-                required
-                autoFocus
-              />
+          <h1 style={{
+            fontSize: 'clamp(36px, 6vw, 64px)',
+            fontWeight: 900,
+            lineHeight: 1.1,
+            marginBottom: 24,
+            background: 'linear-gradient(135deg, var(--text) 0%, rgba(108,99,255,0.9) 100%)',
+            WebkitBackgroundClip: 'text',
+            WebkitTextFillColor: 'transparent',
+          }}>
+            Rozmawiaj ze znajomymi.<br />Bez kompromisów.
+          </h1>
 
-              {error && (
-                <div style={{
-                  background: 'rgba(248,113,113,0.1)',
-                  border: '1px solid rgba(248,113,113,0.3)',
-                  borderRadius: 10, padding: '10px 14px',
-                  color: 'var(--red)', fontSize: 14,
-                }}>
-                  {error}
-                </div>
-              )}
+          <p style={{
+            fontSize: 18,
+            color: 'var(--text-muted)',
+            lineHeight: 1.7,
+            maxWidth: 480,
+            margin: '0 auto 40px',
+          }}>
+            Novu to darmowy komunikator do rozmów głosowych i wideo. Żadnych reklam, żadnego śledzenia.
+          </p>
 
-              <button
-                className="btn-primary"
-                type="submit"
-                disabled={loading}
-                style={{ display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 10 }}
-              >
-                {loading ? (
-                  <><div className="spinner" /> Wysyłanie...</>
-                ) : (
-                  '✉️ Wyślij link logowania'
-                )}
-              </button>
-
-              <p style={{
-                textAlign: 'center', fontSize: 13,
-                color: 'var(--text-muted)', marginTop: 4,
-              }}>
-                Bez hasła — logowanie przez e-mail. Bezpieczne i proste.
-              </p>
-            </form>
-          ) : (
-            <div className="animate-fade-in" style={{ textAlign: 'center' }}>
-              <div style={{ fontSize: 56, marginBottom: 16 }}>📬</div>
-              <h2 style={{ fontSize: 20, fontWeight: 700, marginBottom: 8 }}>
-                Sprawdź skrzynkę!
-              </h2>
-              <p style={{ color: 'var(--text-muted)', fontSize: 15, lineHeight: 1.6 }}>
-                Wysłaliśmy link logowania na{' '}
-                <strong style={{ color: 'var(--text)' }}>{email}</strong>.
-                <br />Kliknij go, żeby się zalogować.
-              </p>
-              <button
-                onClick={() => { setSent(false); setEmail('') }}
-                style={{
-                  marginTop: 20, background: 'none', border: 'none',
-                  color: 'var(--primary)', cursor: 'pointer',
-                  fontSize: 14, fontFamily: 'Nunito, sans-serif',
-                  fontWeight: 600,
-                }}
-              >
-                ← Wróć i zmień e-mail
-              </button>
-            </div>
-          )}
+          <Link href="/login" style={{
+            display: 'inline-flex',
+            alignItems: 'center',
+            gap: 10,
+            background: 'var(--primary)',
+            color: 'white',
+            padding: '16px 36px',
+            borderRadius: 'var(--radius)',
+            textDecoration: 'none',
+            fontWeight: 700,
+            fontSize: 16,
+            boxShadow: '0 4px 32px rgba(108,99,255,0.35)',
+          }}>
+            Zacznij teraz — to darmowe →
+          </Link>
         </div>
+
+        {/* Features */}
+        <div style={{
+          maxWidth: 900,
+          margin: '0 auto',
+          padding: '0 32px 80px',
+          display: 'grid',
+          gridTemplateColumns: 'repeat(auto-fit, minmax(240px, 1fr))',
+          gap: 20,
+        }}>
+          {[
+            { icon: '🎙️', title: 'Rozmowy głosowe', desc: 'Krystalicznie czysty dźwięk z redukcją szumów.' },
+            { icon: '📹', title: 'Wideo HD', desc: 'Połączenia wideo bezpośrednio między urządzeniami (P2P).' },
+            { icon: '💬', title: 'Czat', desc: 'Wiadomości tekstowe w czasie rzeczywistym.' },
+            { icon: '🔒', title: 'Prywatność', desc: 'Brak reklam, brak śledzenia, brak zbędnych danych.' },
+          ].map(f => (
+            <div key={f.title} style={{
+              background: 'var(--surface)',
+              border: '1px solid var(--border)',
+              borderRadius: 20,
+              padding: '28px 24px',
+            }}>
+              <div style={{ fontSize: 32, marginBottom: 14 }}>{f.icon}</div>
+              <h3 style={{ fontSize: 16, fontWeight: 700, marginBottom: 8 }}>{f.title}</h3>
+              <p style={{ fontSize: 14, color: 'var(--text-muted)', lineHeight: 1.6 }}>{f.desc}</p>
+            </div>
+          ))}
+        </div>
+
+        {/* Footer */}
+        <footer style={{
+          borderTop: '1px solid var(--border)',
+          padding: '24px 32px',
+          display: 'flex',
+          alignItems: 'center',
+          justifyContent: 'space-between',
+          flexWrap: 'wrap',
+          gap: 12,
+        }}>
+          <span style={{ fontSize: 13, color: 'var(--text-muted)' }}>© {new Date().getFullYear()} Novu</span>
+          <Link href="/privacy" style={{ fontSize: 13, color: 'var(--text-muted)', textDecoration: 'none' }}>
+            Polityka prywatności
+          </Link>
+        </footer>
       </div>
     </>
   )
