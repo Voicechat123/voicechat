@@ -283,22 +283,15 @@ function ProfileModal({ user, profile, onClose, onProfileUpdated }) {
                 </button>
                 <button type="button" disabled={deleteLoading} onClick={async () => {
                   setDeleteLoading(true)
-                  try {
-                    const { data: { session } } = await supabase.auth.getSession()
-                    const res = await fetch(`${process.env.NEXT_PUBLIC_SUPABASE_URL}/functions/v1/delete-account`, {
-                      method: 'POST',
-                      headers: {
-                        'Authorization': `Bearer ${session.access_token}`,
-                        'Content-Type': 'application/json',
-                      },
-                    })
-                    if (!res.ok) throw new Error('Błąd serwera')
-                    await supabase.auth.signOut()
-                    window.location.href = '/login'
-                  } catch(e) {
-                    setDeleteLoading(false)
-                    alert('Błąd: ' + (e?.message || JSON.stringify(e)))
-                  }
+                  // Usuń dane użytkownika
+                  await supabase.from('messages').delete().or(`sender_id.eq.${user.id},receiver_id.eq.${user.id}`)
+                  await supabase.from('call_signals').delete().or(`caller_id.eq.${user.id},callee_id.eq.${user.id}`)
+                  await supabase.from('profiles').delete().eq('id', user.id)
+                  // Wywołaj RPC żeby usunąć z auth.users
+                  await supabase.rpc('delete_user').catch(() => {})
+                  // Wyczyść sesję ręcznie (signOut może rzucić błąd gdy user już nie istnieje)
+                  Object.keys(localStorage).forEach(k => { if (k.startsWith('sb-')) localStorage.removeItem(k) })
+                  window.location.href = '/login'
                 }} style={{
                   flex: 1, padding: '10px', background: 'var(--red)', border: 'none',
                   borderRadius: 'var(--radius)', color: 'white', fontFamily: 'Inter,sans-serif',
