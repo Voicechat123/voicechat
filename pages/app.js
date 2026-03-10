@@ -284,12 +284,14 @@ function ProfileModal({ user, profile, onClose, onProfileUpdated }) {
                 <button type="button" disabled={deleteLoading} onClick={async () => {
                   setDeleteLoading(true)
                   // Usuń dane użytkownika
-                  await supabase.from('messages').delete().or(`sender_id.eq.${user.id},receiver_id.eq.${user.id}`)
-                  await supabase.from('call_signals').delete().or(`caller_id.eq.${user.id},callee_id.eq.${user.id}`)
-                  await supabase.from('profiles').delete().eq('id', user.id)
-                  // Wywołaj RPC żeby usunąć z auth.users
-                  await supabase.rpc('delete_user').catch(() => {})
-                  // Wyczyść sesję ręcznie (signOut może rzucić błąd gdy user już nie istnieje)
+                  await supabase.from('messages').delete().or(`sender_id.eq.${user.id},receiver_id.eq.${user.id}`).catch(() => {})
+                  await supabase.from('call_signals').delete().or(`caller_id.eq.${user.id},callee_id.eq.${user.id}`).catch(() => {})
+                  await supabase.from('profiles').delete().eq('id', user.id).catch(() => {})
+                  // Wywołaj RPC z timeoutem - nie czekaj na odpowiedź
+                  supabase.rpc('delete_user').catch(() => {})
+                  // Poczekaj chwilę żeby RPC zdążyło zadziałać
+                  await new Promise(r => setTimeout(r, 1500))
+                  // Wyczyść sesję i przekieruj
                   Object.keys(localStorage).forEach(k => { if (k.startsWith('sb-')) localStorage.removeItem(k) })
                   window.location.href = '/login'
                 }} style={{
