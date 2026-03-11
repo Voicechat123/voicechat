@@ -418,12 +418,12 @@ export default function AppPage() {
   useEffect(() => {
     if (!user || !profile) return
 
-    // Utwórz PeerJS peer z ID opartym o user.id (skróconym)
     const peerId = 'novu_' + user.id.replace(/-/g, '').slice(0, 16)
 
-    // Poczekaj aż PeerJS załaduje się z CDN
-    await waitForPeer()
-    const peer = createPeer(peerId)
+    const init = async () => {
+      // Poczekaj aż PeerJS załaduje się z CDN
+      await waitForPeer()
+      const peer = createPeer(peerId)
     peerRef.current = peer
 
     peer.on('open', () => {
@@ -456,13 +456,15 @@ export default function AppPage() {
       console.error('[PeerJS] Error:', err)
     })
 
-    peer.on('disconnected', () => {
-      setTimeout(() => { if (peerRef.current && !peerRef.current.destroyed) peerRef.current.reconnect() }, 2000)
-    })
+      peer.on('disconnected', () => {
+        setTimeout(() => { if (peerRef.current && !peerRef.current.destroyed) peerRef.current.reconnect() }, 2000)
+      })
+    }
+
+    init()
 
     return () => {
-      peer.destroy()
-      peerRef.current = null
+      if (peerRef.current) { peerRef.current.destroy(); peerRef.current = null }
     }
   }, [user, profile])
 
