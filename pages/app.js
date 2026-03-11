@@ -2,7 +2,7 @@ import { useState, useEffect, useRef, useCallback } from 'react'
 import { useRouter } from 'next/router'
 import Head from 'next/head'
 import { supabase } from '../lib/supabaseClient'
-import { createPeer, getMedia } from '../lib/peerCall'
+import { createPeer, getMedia, waitForPeer } from '../lib/peerCall'
 import CallModal from '../components/CallModal'
 import AvatarUpload from '../components/AvatarUpload'
 import { NovuMark, NovuWordmark } from '../components/NovuLogo'
@@ -421,6 +421,8 @@ export default function AppPage() {
     // Utwórz PeerJS peer z ID opartym o user.id (skróconym)
     const peerId = 'novu_' + user.id.replace(/-/g, '').slice(0, 16)
 
+    // Poczekaj aż PeerJS załaduje się z CDN
+    await waitForPeer()
     const peer = createPeer(peerId)
     peerRef.current = peer
 
